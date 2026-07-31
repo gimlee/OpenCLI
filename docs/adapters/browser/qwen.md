@@ -73,7 +73,7 @@ opencli qwen image "a tiny robot" --sd true
 | Option | Description |
 |--------|-------------|
 | `prompt` | Image prompt (required positional) |
-| `--op` | Output directory (default: `~/Pictures/qianwen`) |
+| `--op` | Output directory (default: current directory) |
 | `--new` | Start a new chat before generating (default: `true`) |
 | `--sd` | Skip download; only print the conversation link |
 | `--timeout` | Max seconds to wait for the image response (default: `180`) |

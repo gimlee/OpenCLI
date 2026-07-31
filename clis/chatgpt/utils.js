@@ -1618,6 +1618,149 @@ function conversationIdFromUrl(url) {
     return match?.[1] || '';
 }
 
+function normalizeChatGPTImageUrl(value) {
+    const raw = String(value || '').trim().replace(/[),.;\]]+$/g, '');
+    if (!raw) return '';
+    if (/^data:image\//i.test(raw) || /^blob:/i.test(raw)) return raw;
+    if (/^file-service:\/\//i.test(raw)) {
+        const id = raw.replace(/^file-service:\/\//i, '').split(/[?#]/, 1)[0];
+        return id ? `${CHATGPT_URL}/backend-api/estuary/content?id=${encodeURIComponent(id)}` : '';
+    }
+    try {
+        return new URL(raw, CHATGPT_URL).href;
+    } catch {
+        return raw;
+    }
+}
+
+function chatGPTImageUrlKey(value) {
+    const normalized = normalizeChatGPTImageUrl(value);
+    if (!normalized || /^data:|^blob:/i.test(normalized)) return normalized;
+    try {
+        const parsed = new URL(normalized);
+        const id = parsed.searchParams.get('id') || parsed.searchParams.get('file_id');
+        if (id) return `${parsed.origin}${parsed.pathname}?id=${id}`;
+        return `${parsed.origin}${parsed.pathname}`;
+    } catch {
+        return normalized;
+    }
+}
+
+function looksLikeChatGPTImageUrl(value) {
+    const normalized = normalizeChatGPTImageUrl(value);
+    if (!normalized) return false;
+    if (/^data:image\//i.test(normalized) || /^blob:/i.test(normalized)) return true;
+    try {
+        const parsed = new URL(normalized);
+        const host = parsed.hostname.toLowerCase();
+        const path = parsed.pathname.toLowerCase();
+        if (path.includes('/backend-api/estuary/content') && (parsed.searchParams.get('id') || parsed.searchParams.get('file_id'))) {
+            return true;
+        }
+        if (/\.(?:png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.href)) return true;
+        return /(?:oaiusercontent|oaidalle|openai|chatgpt)/i.test(host) && /image|generated|dalle|asset|content/i.test(parsed.href);
+    } catch {
+        return false;
+    }
+}
+
+function chatGPTContentUrlFromFileId(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const decoded = (() => {
+        try { return decodeURIComponent(raw); } catch { return raw; }
+    })();
+    const serviceMatch = decoded.match(/file-service:\/\/(file[-_][A-Za-z0-9_-]+)/i);
+    const idMatch = serviceMatch || decoded.match(/\b(file[-_][A-Za-z0-9_-]{6,})\b/i);
+    const id = idMatch?.[1] || '';
+    return id ? `${CHATGPT_URL}/backend-api/estuary/content?id=${encodeURIComponent(id)}` : '';
+}
+
+function addUniqueChatGPTImageUrl(out, value) {
+    const normalized = normalizeChatGPTImageUrl(value);
+    if (!looksLikeChatGPTImageUrl(normalized)) return;
+    const key = chatGPTImageUrlKey(normalized);
+    if (!key || out.some((item) => chatGPTImageUrlKey(item) === key)) return;
+    out.push(normalized);
+}
+
+function collectChatGPTImageUrlsFromValue(value, out, context = {}) {
+    const key = String(context.key || '').toLowerCase();
+    const imageLike = Boolean(context.imageLike)
+        || /image|dalle|asset_pointer|multimodal/.test(String(context.type || '').toLowerCase())
+        || /image|thumbnail|asset_pointer|download|file|url|src/.test(key);
+
+    if (typeof value === 'string') {
+        const urlPattern = /(https?:\/\/[^\s"'<>\\)]+|\/backend-api\/estuary\/content\?[^\s"'<>\\)]+)/ig;
+        for (const match of value.matchAll(urlPattern)) {
+            addUniqueChatGPTImageUrl(out, match[1]);
+        }
+        if (imageLike || key === 'asset_pointer' || key === 'file_id' || key === 'fileid') {
+            addUniqueChatGPTImageUrl(out, chatGPTContentUrlFromFileId(value));
+        }
+        return;
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) collectChatGPTImageUrlsFromValue(item, out, context);
+        return;
+    }
+
+    if (!value || typeof value !== 'object') return;
+    const type = String(
+        value.content_type
+        || value.contentType
+        || value.mime_type
+        || value.mimeType
+        || value.type
+        || '',
+    );
+    const nextImageLike = imageLike || /image|dalle|asset_pointer|multimodal/i.test(type);
+    for (const [childKey, childValue] of Object.entries(value)) {
+        collectChatGPTImageUrlsFromValue(childValue, out, {
+            key: childKey,
+            type,
+            imageLike: nextImageLike || /image|asset|pointer|thumbnail|download|file|url|src/i.test(childKey),
+        });
+    }
+}
+
+export function extractChatGPTGeneratedImageUrlsFromConversationPayload(payload) {
+    const mapping = payload?.mapping && typeof payload.mapping === 'object' && !Array.isArray(payload.mapping)
+        ? payload.mapping
+        : {};
+    const rows = Object.values(mapping).map((node, index) => {
+        const message = node?.message || null;
+        const role = String(message?.author?.role || message?.role || '').toLowerCase();
+        const createTime = Number(message?.create_time || message?.createTime || node?.create_time || 0);
+        const urls = [];
+        if (message) collectChatGPTImageUrlsFromValue(message, urls);
+        return { index, role, createTime: Number.isFinite(createTime) ? createTime : 0, urls };
+    }).filter((row) => row.role && row.role !== 'system');
+
+    const ordered = rows
+        .map((row, order) => ({ ...row, order }))
+        .sort((a, b) => (a.createTime || a.order) - (b.createTime || b.order));
+    const lastUserOrder = ordered.reduce((last, row, order) => row.role === 'user' ? order : last, -1);
+    const afterLastUser = ordered.filter((row, order) => order > lastUserOrder && row.role !== 'user' && row.urls.length);
+    const sourceRows = afterLastUser.length
+        ? afterLastUser
+        : ordered.filter((row) => row.role !== 'user' && row.urls.length).slice(-1);
+    const result = [];
+    for (const row of sourceRows) {
+        for (const url of row.urls) addUniqueChatGPTImageUrl(result, url);
+    }
+    return result;
+}
+
+export async function getChatGPTConversationImageUrls(page, conversationId) {
+    const id = String(conversationId || '').trim();
+    if (!id) return [];
+    const conversation = await fetchChatGPTConversationPayload(page, id);
+    if (!conversation?.payload) return [];
+    return extractChatGPTGeneratedImageUrlsFromConversationPayload(conversation.payload);
+}
+
 async function buildChatGPTConversationHeaders(page, { includeAuthorization = false } = {}) {
     if (typeof page.getCookies !== 'function') {
         return { ok: false, status: 0, reason: 'missing-cookie-api' };
@@ -2648,11 +2791,12 @@ export async function getChatGPTVisibleImageUrls(page) {
  * Wait for new images to appear after sending a prompt.
  */
 export async function waitForChatGPTImages(page, beforeUrls, timeoutSeconds, convUrl) {
-    const beforeSet = new Set(beforeUrls);
+    const beforeSet = new Set(beforeUrls.map(chatGPTImageUrlKey).filter(Boolean));
     const pollIntervalSeconds = 3;
     const maxPolls = Math.max(1, Math.ceil(timeoutSeconds / pollIntervalSeconds));
     let lastUrls = [];
     let stableCount = 0;
+    const conversationId = conversationIdFromUrl(convUrl);
 
     for (let i = 0; i < maxPolls; i++) {
         await page.sleep(i === 0 ? 3 : pollIntervalSeconds);
@@ -2666,10 +2810,9 @@ export async function waitForChatGPTImages(page, beforeUrls, timeoutSeconds, con
             }
         }
 
-        const generating = await isGenerating(page);
-        if (generating) continue;
+        const generating = await isGenerating(page).catch(() => false);
 
-        if (convUrl && convUrl.includes('/c/') && i > 0 && i % 5 === 0) {
+        if (!generating && convUrl && convUrl.includes('/c/') && i > 0 && i % 5 === 0) {
             const onConversation = !currentUrl || isSameChatGPTConversation(currentUrl, convUrl);
             if (onConversation) {
                 await page.goto(convUrl);
@@ -2677,19 +2820,29 @@ export async function waitForChatGPTImages(page, beforeUrls, timeoutSeconds, con
             }
         }
 
-        const urls = (await getChatGPTVisibleImageUrls(page)).filter(url => !beforeSet.has(url));
+        const visibleUrls = await getChatGPTVisibleImageUrls(page).catch(() => []);
+        const conversationUrls = conversationId
+            ? await getChatGPTConversationImageUrls(page, conversationId).catch(() => [])
+            : [];
+        const urls = [];
+        for (const url of [...visibleUrls, ...conversationUrls]) {
+            const key = chatGPTImageUrlKey(url);
+            if (!key || beforeSet.has(key) || urls.some((item) => chatGPTImageUrlKey(item) === key)) continue;
+            urls.push(normalizeChatGPTImageUrl(url));
+        }
         if (urls.length === 0) continue;
 
-        const key = urls.join('\n');
-        const prevKey = lastUrls.join('\n');
+        const key = urls.map(chatGPTImageUrlKey).join('\n');
+        const prevKey = lastUrls.map(chatGPTImageUrlKey).join('\n');
         if (key === prevKey) {
             stableCount += 1;
+            lastUrls = urls;
         } else {
             lastUrls = urls;
             stableCount = 1;
         }
 
-        if (stableCount >= 2 || i === maxPolls - 1) {
+        if (stableCount >= 2 || (!generating && stableCount >= 1) || i === maxPolls - 1) {
             return lastUrls;
         }
     }
@@ -3241,6 +3394,10 @@ export const __test__ = {
     isSameChatGPTConversation,
     parseChatGPTConversationId,
     parseChatGPTProjectId,
+    conversationIdFromUrl,
+    chatGPTContentUrlFromFileId,
+    chatGPTImageUrlKey,
+    extractChatGPTGeneratedImageUrlsFromConversationPayload,
     extractDeepResearchFromConversationPayload,
     extractDeepResearchFromNetworkEntries,
     extractDeepResearchFromWidgetState,
@@ -3254,8 +3411,23 @@ export const __test__ = {
  * Export images by URL: fetch from ChatGPT backend API and convert to base64 data URLs.
  */
 export async function getChatGPTImageAssets(page, urls) {
-    const urlsJson = JSON.stringify(urls);
-    return requireArrayEvaluateResult(unwrapEvaluateResult(await page.evaluate(`
+    const normalizedUrls = Array.from(new Set((Array.isArray(urls) ? urls : [])
+        .map((url) => normalizeChatGPTImageUrl(url))
+        .filter(Boolean)));
+    const nodeAssets = [];
+    const nodeKeys = new Set();
+    for (const url of normalizedUrls) {
+        const asset = await fetchChatGPTImageAssetWithNode(page, url).catch(() => null);
+        if (!asset) continue;
+        nodeAssets.push(asset);
+        nodeKeys.add(chatGPTImageUrlKey(url));
+    }
+
+    const fallbackUrls = normalizedUrls.filter((url) => !nodeKeys.has(chatGPTImageUrlKey(url)));
+    if (!fallbackUrls.length) return nodeAssets;
+
+    const urlsJson = JSON.stringify(fallbackUrls);
+    const browserAssets = requireArrayEvaluateResult(unwrapEvaluateResult(await page.evaluate(`
         (async (targetUrls) => {
             const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -3350,4 +3522,50 @@ export async function getChatGPTImageAssets(page, urls) {
             return results;
         })(${urlsJson})
     `)), 'chatgpt image asset export');
+    return [...nodeAssets, ...browserAssets];
+}
+
+function sniffImageMimeFromBuffer(buffer, fallback = '') {
+    if (!buffer || buffer.length < 4) return fallback || 'application/octet-stream';
+    if (buffer.length >= 8 && buffer[0] === 0x89 && buffer.slice(1, 4).toString('ascii') === 'PNG') return 'image/png';
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+    if (buffer.length >= 12 && buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+    if (buffer.slice(0, 4).toString('ascii') === 'GIF8') return 'image/gif';
+    if (buffer.length >= 12 && ['ftypavif', 'ftypavis'].includes(buffer.slice(4, 12).toString('ascii'))) return 'image/avif';
+    return fallback || 'application/octet-stream';
+}
+
+async function fetchChatGPTImageAssetWithNode(page, url) {
+    const normalized = normalizeChatGPTImageUrl(url);
+    if (!/^https?:\/\//i.test(normalized)) return null;
+    const currentUrl = await currentChatGPTUrl(page).catch(() => '');
+    for (const includeAuthorization of [false, true]) {
+        const auth = await buildChatGPTBackendHeaders(page, { includeAuthorization });
+        if (!auth.ok) continue;
+        const headers = {
+            ...auth.headers,
+            accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            referer: currentUrl || `${CHATGPT_URL}/`,
+        };
+        const response = await fetch(normalized, {
+            headers,
+            signal: AbortSignal.timeout(45_000),
+        });
+        if (!response.ok) {
+            if ((response.status === 401 || response.status === 403) && !includeAuthorization) continue;
+            return null;
+        }
+        const bytes = Buffer.from(await response.arrayBuffer());
+        const headerMime = String(response.headers.get('content-type') || '').split(';', 1)[0];
+        const mimeType = sniffImageMimeFromBuffer(bytes, headerMime);
+        if (!String(mimeType || '').startsWith('image/')) return null;
+        return {
+            url: normalized,
+            dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}`,
+            mimeType,
+            width: 0,
+            height: 0,
+        };
+    }
+    return null;
 }

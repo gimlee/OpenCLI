@@ -74,7 +74,7 @@ opencli chatgpt image "a tiny watercolor fox" --sd true
 | `--markdown` | Convert assistant message HTML to Markdown for `read` / `detail` |
 | `--limit` | Max visible history conversations to return (default: `20`) |
 | `--image` | Local image path to attach before prompting; comma-separated paths are supported |
-| `--op` | Output directory for downloaded images (default: `~/Pictures/chatgpt`) |
+| `--op` | Output directory for downloaded images (default: current directory) |
 | `--sd` | Skip download and only print the ChatGPT conversation link |
 | `model` | ChatGPT intelligence level for `model`: `fast`, `balanced`, `advanced`, `very-high`, or `pro`; aliases include `speed`/`instant`, `balance`/`medium`, `high`/`thinking`, `ultra`/`xhigh`/`x-high`/`extra-high`, `professional`, and the Chinese labels `极速`/`均衡`/`高级`/`超高`/`专业` |
 

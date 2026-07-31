@@ -82,6 +82,24 @@ describe('chatgpt image wait contract', () => {
         expect(page.goto).toHaveBeenCalledWith(convUrl);
     });
 
+    it('returns a stable rendered image even while the stop control remains visible', async () => {
+        const convUrl = 'https://chatgpt.com/c/demo';
+        const page = createPageMock({
+            location: convUrl,
+            generating: [true, true, true],
+            imageUrls: [
+                ['https://chatgpt.com/backend-api/estuary/content?id=file_new&ts=1'],
+                ['https://chatgpt.com/backend-api/estuary/content?id=file_new&ts=2'],
+                ['https://chatgpt.com/backend-api/estuary/content?id=file_new&ts=3'],
+            ],
+        });
+
+        await expect(waitForChatGPTImages(page, [], 9, convUrl)).resolves.toEqual([
+            'https://chatgpt.com/backend-api/estuary/content?id=file_new&ts=2',
+        ]);
+        expect(page.goto).not.toHaveBeenCalled();
+    });
+
     it('treats query and hash variants as the same conversation', () => {
         expect(__test__.isSameChatGPTConversation(
             'https://chatgpt.com/c/demo?model=gpt-image-1',
@@ -1519,6 +1537,53 @@ describe('chatgpt generated image detection', () => {
                 height: 512,
             }),
         ]);
+    });
+
+    it('extracts generated estuary image URLs from the latest assistant conversation payload', () => {
+        const payload = {
+            mapping: {
+                staleUser: {
+                    message: { author: { role: 'user' }, create_time: 1, content: { parts: ['old prompt'] } },
+                },
+                staleAssistant: {
+                    message: {
+                        author: { role: 'assistant' },
+                        create_time: 2,
+                        content: {
+                            parts: [{ content_type: 'image_asset_pointer', asset_pointer: 'file-service://file_old' }],
+                        },
+                    },
+                },
+                latestUser: {
+                    message: { author: { role: 'user' }, create_time: 3, content: { parts: ['Generate an image of: rabbit'] } },
+                },
+                latestAssistant: {
+                    message: {
+                        author: { role: 'assistant' },
+                        create_time: 4,
+                        content: {
+                            parts: [{ content_type: 'image_asset_pointer', asset_pointer: 'file-service://file_result' }],
+                        },
+                    },
+                },
+            },
+        };
+
+        expect(__test__.extractChatGPTGeneratedImageUrlsFromConversationPayload(payload)).toEqual([
+            'https://chatgpt.com/backend-api/estuary/content?id=file_result',
+        ]);
+    });
+
+    it('dedupes ChatGPT estuary URLs by file id instead of temporary query params', () => {
+        expect(__test__.chatGPTImageUrlKey(
+            'https://chatgpt.com/backend-api/estuary/content?id=file_result&ts=1&sig=a',
+        )).toBe('https://chatgpt.com/backend-api/estuary/content?id=file_result');
+        expect(__test__.chatGPTImageUrlKey(
+            'https://chatgpt.com/backend-api/estuary/content?id=file_result&ts=2&sig=b',
+        )).toBe('https://chatgpt.com/backend-api/estuary/content?id=file_result');
+        expect(__test__.chatGPTContentUrlFromFileId('file-service://file_result')).toBe(
+            'https://chatgpt.com/backend-api/estuary/content?id=file_result',
+        );
     });
 });
 

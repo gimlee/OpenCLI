@@ -70,7 +70,7 @@ beforeEach(() => {
 
 describe('chatgpt image output paths', () => {
     it('expands the default and explicit home-relative output directories', () => {
-        expect(resolveOutputDir()).toBe(path.join(os.homedir(), 'Pictures', 'chatgpt'));
+        expect(resolveOutputDir()).toBe(process.cwd());
         expect(resolveOutputDir('~/tmp/chatgpt-images')).toBe(path.join(os.homedir(), 'tmp', 'chatgpt-images'));
         expect(resolveOutputDir('~')).toBe(os.homedir());
     });

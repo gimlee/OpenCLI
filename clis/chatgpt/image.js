@@ -22,9 +22,9 @@ function displayPath(filePath) {
 
 export function resolveOutputDir(value) {
     const raw = String(value || '').trim();
-    if (!raw) return path.join(os.homedir(), 'Pictures', 'chatgpt');
+    if (!raw) return process.cwd();
     if (raw === '~') return os.homedir();
-    if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
+    if (raw.startsWith('~/') || raw.startsWith('~\\')) return path.join(os.homedir(), raw.slice(2));
     return path.resolve(raw);
 }
 
@@ -73,7 +73,7 @@ export const imageCommand = cli({
         { name: 'prompt', positional: true, required: true, help: 'Image prompt to send to ChatGPT' },
         { name: 'image', help: 'Local image path to attach before prompting; comma-separated paths are supported' },
         { name: 'project', valueRequired: true, help: 'Start image generation inside a ChatGPT project ID or /g/g-p-<id> URL' },
-        { name: 'op', help: 'Output directory (default: ~/Pictures/chatgpt)' },
+        { name: 'op', default: '.', help: 'Output directory (default: current directory)' },
         { name: 'sd', type: 'boolean', default: false, help: 'Skip download shorthand; only show ChatGPT link' },
         { name: 'timeout', type: 'int', required: false, default: 240, help: 'Max seconds for the overall command (default: 240)' },
     ],

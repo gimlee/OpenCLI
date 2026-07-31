@@ -6427,8 +6427,9 @@
       {
         "name": "op",
         "type": "str",
+        "default": ".",
         "required": false,
-        "help": "Output directory (default: ~/Pictures/chatgpt)"
+        "help": "Output directory (default: current directory)"
       },
       {
         "name": "sd",
@@ -30990,9 +30991,9 @@
       {
         "name": "op",
         "type": "str",
-        "default": "~/Pictures/qianwen",
+        "default": ".",
         "required": false,
-        "help": "Output directory"
+        "help": "Output directory (default: current directory)"
       },
       {
         "name": "new",
