@@ -5,7 +5,7 @@ export const SEARCH_URL_PREFIX = 'https://s.1688.com/selloffer/offer_search.htm?
 export const DETAIL_URL_PREFIX = 'https://detail.1688.com/offer/';
 export const STORE_MOBILE_URL_PREFIX = 'https://winport.m.1688.com/page/index.html?memberId=';
 export const STRATEGY = 'cookie';
-export const SEARCH_LIMIT_DEFAULT = 20;
+export const SEARCH_LIMIT_DEFAULT = 3;
 export const SEARCH_LIMIT_MAX = 100;
 const STORE_GENERIC_HOSTS = new Set(['www', 'detail', 's', 'winport', 'work', 'air', 'dj']);
 const TRACKING_QUERY_KEYS = new Set([

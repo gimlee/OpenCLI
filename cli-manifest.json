@@ -430,9 +430,9 @@
       {
         "name": "limit",
         "type": "int",
-        "default": 20,
+        "default": 3,
         "required": false,
-        "help": "结果数量上限（默认 20，最大 100）"
+        "help": "结果数量上限（默认 3，最大 100）"
       }
     ],
     "columns": [
@@ -533,9 +533,9 @@
       {
         "name": "limit",
         "type": "int",
-        "default": 20,
+        "default": 3,
         "required": false,
-        "help": "结果数量上限（默认 20，最大 100）"
+        "help": "结果数量上限（默认 3，最大 100）"
       }
     ],
     "columns": [

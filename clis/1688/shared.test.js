@@ -4,6 +4,7 @@ describe('1688 shared helpers', () => {
     it('builds encoded search URLs and validates limit', () => {
         expect(__test__.buildSearchUrl('置物架')).toBe('https://s.1688.com/selloffer/offer_search.htm?charset=utf8&keywords=%E7%BD%AE%E7%89%A9%E6%9E%B6');
         expect(() => __test__.buildSearchUrl('   ')).toThrowError(/cannot be empty/i);
+        expect(__test__.parseSearchLimit(undefined)).toBe(3);
         expect(__test__.parseSearchLimit(3)).toBe(3);
         expect(__test__.parseSearchLimit('1000')).toBe(__test__.SEARCH_LIMIT_MAX);
         expect(() => __test__.parseSearchLimit('0')).toThrowError(/positive integer/i);
