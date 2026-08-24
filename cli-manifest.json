@@ -413,6 +413,48 @@
   },
   {
     "site": "1688",
+    "name": "image-search",
+    "description": "1688 以图搜同款（支持图片 URL 或本地图片）",
+    "access": "read",
+    "domain": "www.1688.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "input",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "图片 URL 或本地 jpg/jpeg/png/bmp/webp 文件"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "结果数量上限（默认 20，最大 100）"
+      }
+    ],
+    "columns": [
+      "rank",
+      "offer_id",
+      "title",
+      "item_url",
+      "image_url",
+      "price_text",
+      "moq_text",
+      "seller_name",
+      "sales_text",
+      "member_id",
+      "location"
+    ],
+    "type": "js",
+    "modulePath": "1688/image-search.js",
+    "sourceFile": "1688/image-search.js",
+    "navigateBefore": false
+  },
+  {
+    "site": "1688",
     "name": "item",
     "description": "1688 商品详情（公开商品字段、价格阶梯、卖家基础信息）",
     "access": "read",
