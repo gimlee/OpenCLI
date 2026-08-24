@@ -1,39 +1,8 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
+import { canonicalizeLinkedInThreadUrl, normalizeWhitespace, unwrapEvaluateResult } from './shared.js';
 
 const LINKEDIN_DOMAIN = 'www.linkedin.com';
-
-function normalizeWhitespace(value) {
-  return String(value ?? '').replace(/[\u00a0\u202f]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function unwrapEvaluateResult(payload) {
-  if (payload && typeof payload === 'object' && 'data' in payload && 'session' in payload) return payload.data;
-  return payload;
-}
-
-function isLinkedInHost(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return host === 'linkedin.com' || host.endsWith('.linkedin.com');
-}
-
-function canonicalizeLinkedInThreadUrl(value) {
-  const raw = normalizeWhitespace(value);
-  if (!raw) return '';
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'https:' || url.username || url.password || url.port || !isLinkedInHost(url.hostname)) return '';
-    const match = url.pathname.match(/^\/messaging\/thread\/([^/]+)\/?$/i);
-    if (!match || !match[1]) return '';
-    url.hostname = 'www.linkedin.com';
-    url.hash = '';
-    url.search = '';
-    if (!url.pathname.endsWith('/')) url.pathname += '/';
-    return url.toString();
-  } catch {
-    return '';
-  }
-}
 
 function requireStringArg(args, key, label = key) {
   const value = normalizeWhitespace(args[key]);
@@ -206,9 +175,6 @@ cli({
 });
 
 export const __test__ = {
-  normalizeWhitespace,
-  canonicalizeLinkedInThreadUrl,
   parseMaxScrolls,
-  unwrapEvaluateResult,
   buildThreadSnapshotScript,
 };
