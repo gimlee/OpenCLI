@@ -2788,7 +2788,10 @@ export async function getChatGPTVisibleImageUrls(page) {
                             const g = pixel[1];
                             const b = pixel[2];
                             const a = pixel[3];
-                            if (a > 0 && !(r > 248 && g > 248 && b > 248)) {
+                            const isVisible = a > 8;
+                            const isNearWhite = r > 248 && g > 248 && b > 248;
+                            const isNearBlack = r < 12 && g < 12 && b < 12;
+                            if (isVisible && !isNearWhite && !isNearBlack) {
                                 hasContent = true;
                                 break;
                             }

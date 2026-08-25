@@ -1540,6 +1540,19 @@ describe('chatgpt generated image detection', () => {
         await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([]);
     });
 
+    it('ignores opaque black placeholder canvases', async () => {
+        const page = createDomPage('<!doctype html><canvas width="512" height="512"></canvas>', (window) => {
+            const canvas = window.document.querySelector('canvas');
+            canvas.getBoundingClientRect = () => ({ width: 512, height: 512 });
+            canvas.getContext = () => ({
+                getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) }),
+            });
+            canvas.toDataURL = () => 'data:image/png;base64,black';
+        });
+
+        await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([]);
+    });
+
     it('ignores user-uploaded reference image previews', async () => {
         const page = createDomPage(`
             <!doctype html>
