@@ -5,7 +5,7 @@ import { cli, Strategy } from '@jackwener/opencli/registry';
 import {
     assertAuthenticatedState, buildProvenance, canonicalizeItemUrl, canonicalizeSellerUrl, cleanText,
     extractLocation, extractMemberId, extractOfferId, extractShopId, gotoAndReadState, parseMoqText,
-    parsePriceText, parseSearchLimit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX,
+    parsePriceText,
 } from './shared.js';
 
 const IMAGE_UPLOAD_API = 'mtop.cbu.global.marketing.search.image.upload';
@@ -167,7 +167,7 @@ function normalizeImageCandidate(candidate, sourceUrl, rank) {
     };
 }
 
-async function collectImageResults(page, resultUrl, limit) {
+async function collectImageResults(page, resultUrl) {
     const state = await gotoAndReadState(page, resultUrl, 4500, 'image-search-results');
     assertAuthenticatedState(state, 'image-search-results');
     const payload = await page.evaluate(`
@@ -256,8 +256,7 @@ async function collectImageResults(page, resultUrl, limit) {
     assertAuthenticatedState(payload, 'image-search-results');
     const rows = (Array.isArray(payload.rows) ? payload.rows : [])
         .map((row, index) => normalizeImageCandidate(row, cleanText(payload.href) || resultUrl, index + 1))
-        .filter((row) => row.item_url && row.offer_id)
-        .slice(0, limit);
+        .filter((row) => row.item_url && row.offer_id);
     if (!rows.length) throw new EmptyResultError('1688 image search', 'No visible matching products were extracted. Try another image or retry after confirming the 1688 locale and login state.');
     return rows;
 }
@@ -277,18 +276,12 @@ cli({
             positional: true,
             help: '图片 URL 或本地 jpg/jpeg/png/bmp/webp 文件',
         },
-        {
-            name: 'limit',
-            type: 'int',
-            default: SEARCH_LIMIT_DEFAULT,
-            help: `结果数量上限（默认 ${SEARCH_LIMIT_DEFAULT}，最大 ${SEARCH_LIMIT_MAX}）`,
-        },
     ],
     columns: ['rank', 'offer_id', 'title', 'item_url', 'image_url', 'price_text', 'moq_text', 'seller_name', 'sales_text', 'member_id', 'location'],
     func: async (page, kwargs) => {
         const imageBytes = await readImageInput(String(kwargs.input ?? ''));
         const imageId = await uploadImage(page, imageBytes);
-        return collectImageResults(page, buildImageSearchUrl(imageId), parseSearchLimit(kwargs.limit));
+        return collectImageResults(page, buildImageSearchUrl(imageId));
     },
 });
 

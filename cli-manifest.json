@@ -426,13 +426,6 @@
         "required": true,
         "positional": true,
         "help": "图片 URL 或本地 jpg/jpeg/png/bmp/webp 文件"
-      },
-      {
-        "name": "limit",
-        "type": "int",
-        "default": 3,
-        "required": false,
-        "help": "结果数量上限（默认 3，最大 100）"
       }
     ],
     "columns": [
@@ -529,13 +522,6 @@
         "required": true,
         "positional": true,
         "help": "搜索关键词，如 \"置物架\""
-      },
-      {
-        "name": "limit",
-        "type": "int",
-        "default": 3,
-        "required": false,
-        "help": "结果数量上限（默认 3，最大 100）"
       }
     ],
     "columns": [
