@@ -1,11 +1,10 @@
 import { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { FACTORY_BADGE_PATTERNS, SERVICE_BADGE_PATTERNS, assertAuthenticatedState, buildProvenance, buildSearchUrl, canonicalizeItemUrl, canonicalizeSellerUrl, cleanText, extractBadges, extractLocation, extractMemberId, extractOfferId, extractShopId, gotoAndReadState, parseMoqText, parsePriceText, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, parseSearchLimit, uniqueNonEmpty, } from './shared.js';
+import { FACTORY_BADGE_PATTERNS, SERVICE_BADGE_PATTERNS, assertAuthenticatedState, buildProvenance, buildSearchUrl, canonicalizeItemUrl, canonicalizeSellerUrl, cleanText, extractBadges, extractLocation, extractMemberId, extractOfferId, extractShopId, gotoAndReadState, parseMoqText, parsePriceText, uniqueNonEmpty, } from './shared.js';
 const SEARCH_ITEM_URL_PATTERNS = [
     'detail.1688.com/offer/',
     'detail.m.1688.com/page/index.html?offerId=',
 ];
-const MAX_SEARCH_PAGES = 12;
 function normalizeSearchCandidate(candidate, sourceUrl) {
     const canonicalItemUrl = canonicalizeItemUrl(cleanText(candidate.item_url));
     const containerText = cleanText(candidate.container_text);
@@ -38,6 +37,7 @@ function normalizeSearchCandidate(candidate, sourceUrl) {
         member_id: extractMemberId(canonicalSellerUrl ?? '') ?? null,
         shop_id: extractShopId(canonicalSellerUrl ?? '') ?? null,
         title: cleanText(candidate.title) || firstWord(containerText) || null,
+        image_url: cleanText(candidate.image_url) || null,
         item_url: canonicalItemUrl,
         seller_name: cleanText(candidate.seller_name) || null,
         seller_url: canonicalSellerUrl,
@@ -106,7 +106,12 @@ async function readSearchPayload(page, url) {
     const state = await gotoAndReadState(page, url, 2500, 'search');
     assertAuthenticatedState(state, 'search');
     const payload = await page.evaluate(`
-    (() => {
+    (async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (let index = 0; index < 6; index += 1) {
+        window.scrollTo(0, document.body.scrollHeight);
+        await wait(600);
+      }
       const normalizeText = (value) => (value || '').replace(/\\s+/g, ' ').trim();
       const normalizeUrl = (href) => {
         if (!href) return '';
@@ -168,6 +173,13 @@ async function readSearchPayload(page, url) {
         }
         return anchor;
       };
+      const firstImageUrl = (root) => {
+        for (const img of Array.from(root.querySelectorAll('img'))) {
+          const url = img.currentSrc || img.src || img.getAttribute('data-src') || '';
+          if (url && /^https?:/i.test(url)) return url;
+        }
+        return null;
+      };
       const collectCandidates = () => {
         const anchors = Array.from(document.querySelectorAll('a')).filter((anchor) => isItemHref(anchor.href || ''));
         const seen = new Set();
@@ -189,6 +201,7 @@ async function readSearchPayload(page, url) {
 
           items.push({
             item_url: href,
+            image_url: firstImageUrl(container) || firstImageUrl(anchor),
             title: firstText(container, ['.offer-title-row .title-text', '.offer-title-row'])
               || normalizeText(anchor.innerText || anchor.textContent || ''),
             container_text: normalizeText(container.innerText || container.textContent || ''),
@@ -238,39 +251,23 @@ async function readSearchPayload(page, url) {
     }
     return payload;
 }
-async function collectSearchRows(page, query, limit) {
+async function collectSearchRows(page, query) {
     const rowsByKey = new Map();
-    const seenPages = new Set();
-    let nextUrl = buildSearchUrl(query);
-    let pageCount = 0;
-    while (nextUrl && rowsByKey.size < limit && pageCount < MAX_SEARCH_PAGES) {
-        if (seenPages.has(nextUrl))
-            break;
-        seenPages.add(nextUrl);
-        pageCount += 1;
-        const payload = await readSearchPayload(page, nextUrl);
-        const sourceUrl = cleanText(payload.href) || nextUrl;
-        const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-        for (const candidate of candidates) {
-            const row = normalizeSearchCandidate(candidate, sourceUrl);
-            const dedupeKey = buildDedupeKey(row);
-            if (!dedupeKey || rowsByKey.has(dedupeKey))
-                continue;
-            rowsByKey.set(dedupeKey, row);
-            if (rowsByKey.size >= limit)
-                break;
-        }
-        const candidateNextUrl = cleanText(payload.next_url);
-        if (!candidateNextUrl || candidateNextUrl === sourceUrl)
-            break;
-        nextUrl = candidateNextUrl;
+    const firstPageUrl = buildSearchUrl(query);
+    const payload = await readSearchPayload(page, firstPageUrl);
+    const sourceUrl = cleanText(payload.href) || firstPageUrl;
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    for (const candidate of candidates) {
+        const row = normalizeSearchCandidate(candidate, sourceUrl);
+        const dedupeKey = buildDedupeKey(row);
+        if (!dedupeKey || rowsByKey.has(dedupeKey))
+            continue;
+        rowsByKey.set(dedupeKey, row);
     }
     if (rowsByKey.size === 0) {
         throw new EmptyResultError('1688 search', 'No visible results were extracted. Retry with a different query or open the same search page in Chrome first.');
     }
-    return [...rowsByKey.values()]
-        .slice(0, limit)
-        .map((row, index) => ({ ...row, rank: index + 1 }));
+    return [...rowsByKey.values()].map((row, index) => ({ ...row, rank: index + 1 }));
 }
 cli({
     site: '1688',
@@ -287,18 +284,11 @@ cli({
             positional: true,
             help: '搜索关键词，如 "置物架"',
         },
-        {
-            name: 'limit',
-            type: 'int',
-            default: SEARCH_LIMIT_DEFAULT,
-            help: `结果数量上限（默认 ${SEARCH_LIMIT_DEFAULT}，最大 ${SEARCH_LIMIT_MAX}）`,
-        },
     ],
     columns: ['rank', 'offer_id', 'title', 'item_url', 'price_text', 'moq_text', 'seller_name', 'member_id', 'location'],
     func: async (page, kwargs) => {
         const query = String(kwargs.query ?? '');
-        const limit = parseSearchLimit(kwargs.limit);
-        return collectSearchRows(page, query, limit);
+        return collectSearchRows(page, query);
     },
 });
 export const __test__ = {
