@@ -37382,6 +37382,78 @@
     "siteSession": "persistent"
   },
   {
+    "site": "tk-seller",
+    "name": "draft",
+    "description": "Fill a TikTok Shop product from local UnoPIM data and optionally save it as a draft; never publish",
+    "access": "write",
+    "example": "opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true --save false",
+    "domain": "seller.tiktokshopglobalselling.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "sku",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "UnoPIM product SKU"
+      },
+      {
+        "name": "region",
+        "type": "str",
+        "default": "MY",
+        "required": false,
+        "help": "TikTok Shop market code, e.g. MY or TH"
+      },
+      {
+        "name": "accept-auto-translation",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Explicitly accept TikTok Shop automatic-translation terms when translation is required"
+      },
+      {
+        "name": "save",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Save as draft after filling; publish is always blocked"
+      },
+      {
+        "name": "pim-url",
+        "type": "str",
+        "required": false,
+        "help": "Local product pipeline base URL (or PIM_API_URL)"
+      },
+      {
+        "name": "pim-token",
+        "type": "str",
+        "required": false,
+        "help": "Local product pipeline callback token (or PIM_OPENCLI_TOKEN)"
+      }
+    ],
+    "columns": [
+      "status",
+      "sku",
+      "region",
+      "product_name",
+      "url",
+      "fields_filled",
+      "images_uploaded",
+      "video_uploaded",
+      "variant_count",
+      "draft_saved",
+      "published",
+      "warnings"
+    ],
+    "type": "js",
+    "modulePath": "tk-seller/draft.js",
+    "sourceFile": "tk-seller/draft.js",
+    "navigateBefore": false,
+    "siteSession": "persistent",
+    "defaultWindowMode": "foreground"
+  },
+  {
     "site": "toutiao",
     "name": "articles",
     "description": "获取头条号创作者后台文章列表及数据",
