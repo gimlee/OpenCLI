@@ -37374,8 +37374,8 @@
     "access": "write",
     "example": "opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true --save false",
     "domain": "seller.tiktokshopglobalselling.com",
-    "strategy": "ui",
-    "browser": true,
+    "strategy": "local",
+    "browser": false,
     "args": [
       {
         "name": "sku",
@@ -37416,6 +37416,38 @@
         "type": "str",
         "required": false,
         "help": "Local product pipeline callback token (or PIM_OPENCLI_TOKEN)"
+      },
+      {
+        "name": "browser-executable-path",
+        "type": "str",
+        "required": false,
+        "help": "Chrome executable used by Playwright (or TIKTOK_BROWSER_EXECUTABLE_PATH)"
+      },
+      {
+        "name": "user-data-dir",
+        "type": "str",
+        "required": false,
+        "help": "Dedicated persistent TikTok Chrome profile (or TIKTOK_BROWSER_USER_DATA_DIR)"
+      },
+      {
+        "name": "headless",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Run Playwright without a visible browser window"
+      },
+      {
+        "name": "login-wait-seconds",
+        "type": "int",
+        "default": 600,
+        "required": false,
+        "help": "Pause for manual login/security verification in the visible Playwright window"
+      },
+      {
+        "name": "artifacts-dir",
+        "type": "str",
+        "required": false,
+        "help": "Directory for Playwright traces and failure screenshots"
       }
     ],
     "columns": [
@@ -37434,10 +37466,7 @@
     ],
     "type": "js",
     "modulePath": "tk-seller/draft.js",
-    "sourceFile": "tk-seller/draft.js",
-    "navigateBefore": false,
-    "siteSession": "persistent",
-    "defaultWindowMode": "foreground"
+    "sourceFile": "tk-seller/draft.js"
   },
   {
     "site": "toutiao",

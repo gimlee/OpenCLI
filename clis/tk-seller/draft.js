@@ -3,6 +3,8 @@ import { cli, Strategy } from '@jackwener/opencli/registry';
 import { readFileSync } from 'node:fs';
 import { basename, extname } from 'node:path';
 
+import { withPlaywrightPage } from './playwright-runtime.js';
+
 const DEFAULT_PIM_URL = 'http://127.0.0.1:8020';
 const DEFAULT_PIM_TOKEN = 'pim-opencli-local-token';
 const SELLER_DOMAIN = 'seller.tiktokshopglobalselling.com';
@@ -19,6 +21,34 @@ function normalizeRegion(value) {
         throw new ArgumentError('region must be a two-letter market code such as MY or TH');
     }
     return region;
+}
+
+async function waitForSellerPage(page, loginWaitSeconds) {
+    const deadline = Date.now() + Math.max(0, Number(loginWaitSeconds) || 0) * 1000;
+    for (;;) {
+        const state = await page.evaluate(`(() => ({
+          currentHref: location.href,
+          pageTitle: document.title,
+          bodyExcerpt: String(document.body?.innerText || '').slice(0, 3000),
+          needsPassword: Boolean(document.querySelector('input[type="password"]')),
+          needsVerification: Array.from(document.querySelectorAll('iframe[src*="captcha" i], [class*="captcha" i], [id*="captcha" i]'))
+            .some((node) => node.offsetParent !== null && getComputedStyle(node).visibility !== 'hidden')
+            || /请完成安全验证|请输入验证码|security verification|verify your identity/i.test(String(document.body?.innerText || '').slice(0, 3000)),
+        }))()`);
+        if (!state || typeof state !== 'object') {
+            throw new CommandExecutionError('TikTok Shop returned malformed page state');
+        }
+        const loginRequired = state.needsPassword || state.needsVerification
+            || /login|passport|accounts/i.test(String(state.currentHref || ''));
+        if (!loginRequired) return state;
+        if (Date.now() >= deadline) {
+            throw new AuthRequiredError(
+                SELLER_DOMAIN,
+                'Log in in the Playwright Chrome window, or rerun with --login-wait-seconds 600 for first-time setup',
+            );
+        }
+        await page.sleep(2);
+    }
 }
 
 async function pimRequest(baseUrl, token, path, payload) {
@@ -122,15 +152,56 @@ function evaluateScript(payload) {
       const stockNode = findControl(['stock', 'quantity', 'inventory', '库存', 'kuantiti stok']);
       if (stockNode) { setValue(stockNode, Math.max(0, Number(input.stock) || 0)); touched.stock = true; }
 
-      const languageLabels = ['product language', 'language', '商品语言', 'bahasa produk', 'ภาษาของสินค้า'];
-      const interactive = Array.from(document.querySelectorAll('button, [role="combobox"], [role="button"], input')).filter(visible);
-      const languageControl = interactive.find((node) => languageLabels.some((term) => context(node).includes(normalize(term))));
-      if (languageControl) {
-        languageControl.click();
-        touched.language_control = true;
-      }
-      return { probeTouched: touched, languageWasOpened: Boolean(languageControl), currentHref: location.href, pageTitle: document.title };
+      return { probeTouched: touched, languageWasOpened: false, currentHref: location.href, pageTitle: document.title };
     })()`;
+}
+
+function sellerLanguageLabel(productLanguage) {
+    const normalized = String(productLanguage || '').trim().toLowerCase();
+    if (normalized.includes('chinese') || normalized.includes('中文') || normalized.startsWith('zh')) return '中文';
+    if (normalized.includes('malay') || normalized.includes('马来') || normalized.startsWith('ms')) return '马来语';
+    if (normalized.includes('thai') || normalized.includes('泰') || normalized.startsWith('th')) return '泰语';
+    return '英语';
+}
+
+async function selectProductLanguage(page, payload) {
+    const rawPage = page.rawPage;
+    if (!rawPage) throw new CommandExecutionError('Playwright page is required for deterministic language selection');
+    const desired = sellerLanguageLabel(payload.product_language || payload.content_locale);
+    const control = rawPage.locator('.core-select-view-with-prefix').filter({ hasText: '输入语言' });
+    const controls = await control.count();
+    if (controls !== 1) {
+        throw new CommandExecutionError(`TikTok Shop input-language selector must match exactly once; got ${controls}`);
+    }
+    const input = control.locator('input');
+    const selectedText = async () => {
+        const inputValue = String(await input.inputValue().catch(() => '')).trim();
+        if (inputValue) return inputValue;
+        const selected = control.locator('.core-select-selection-item, [class*="selection-item"]');
+        const selectedValue = String(await selected.first().innerText().catch(() => '')).trim();
+        if (selectedValue) return selectedValue;
+        const controlText = String(await control.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+        return controlText.replace(/^输入语言\s*/, '').trim();
+    };
+    const current = await selectedText();
+    if (current !== desired) {
+        await control.click();
+        const option = rawPage
+            .locator('.core-select-popup:visible [role="option"], .core-select-popup:visible [role="menuitem"]')
+            .filter({ hasText: desired });
+        const options = await option.count();
+        if (options !== 1) {
+            throw new CommandExecutionError(
+                `TikTok Shop input-language option must match exactly once; got ${options}: ${desired}`,
+            );
+        }
+        await option.click();
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        if (await selectedText() === desired) return desired;
+        await rawPage.waitForTimeout(500);
+    }
+    throw new CommandExecutionError(`TikTok Shop did not confirm the input language: ${desired}`);
 }
 
 async function fillForm(page, payload) {
@@ -138,39 +209,34 @@ async function fillForm(page, payload) {
     if (!result || typeof result !== 'object' || !result.probeTouched) {
         throw new CommandExecutionError('TikTok Shop returned a malformed form-fill result');
     }
-    if (result.languageWasOpened) {
-        await page.wait({ time: 1 });
-        const language = await page.evaluate(`(() => {
-          const desired = ${JSON.stringify(payload.product_language)};
-          const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-          const aliases = {
-            'Chinese (Simplified)': ['chinese (simplified)', 'simplified chinese', '中文（简体）', '简体中文', '中文'],
-            'English': ['english', '英文', '英语'],
-            'Malay': ['malay', 'bahasa melayu', '马来语'],
-          };
-          const expected = aliases[desired] || [desired];
-          const candidates = Array.from(document.querySelectorAll('[role="option"], li, [class*="option"], [class*="Option"]'));
-          const option = candidates.find((node) => expected.some((name) => normalize(node.innerText || node.textContent || '') === normalize(name)));
-          if (!option) return { selected: false, desired };
-          option.click();
-          return { selected: true, desired };
-        })()`);
-        if (language?.selected) {
-            result.probeTouched.product_language = true;
-            await page.sleep(5);
-        }
-    }
     return result.probeTouched;
 }
 
 async function ensureAutoTranslation(page, accepted) {
-    const state = await page.evaluate(`(() => {
-      const checkbox = document.querySelector('input[type="checkbox"]');
+    let state = null;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        state = await page.evaluate(`(() => {
+      const isConsentText = (value) => {
+        const text = String(value || '').toLowerCase();
+        return ['自动翻译', 'auto translation', 'automatic translation', 'terjemahan automatik', 'แปลอัตโนมัติ']
+          .some((term) => text.includes(term));
+      };
+      const contextFor = (checkbox) => {
+        let node = checkbox;
+        for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+          const text = String(node.innerText || '').replace(/\s+/g, ' ').trim();
+          if (isConsentText(text)) return text;
+        }
+        return '';
+      };
+      const checkbox = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+        .find((node) => Boolean(contextFor(node)));
       if (!checkbox) return { required: false, checked: false };
-      const context = String(checkbox.closest('label, div')?.innerText || '').replace(/\s+/g, ' ').trim();
-      const isTranslationConsent = /自动翻译|auto.?translat|terjemahan automatik|แปลอัตโนมัติ/i.test(context);
-      return { required: isTranslationConsent, checked: Boolean(checkbox.checked), context };
+      return { required: true, checked: Boolean(checkbox.checked), context: contextFor(checkbox) };
     })()`);
+        if (state?.required) break;
+        await page.sleep(1);
+    }
     if (!state?.required) return { required: false, translated: false };
     if (!state.checked && !accepted) {
         throw new CommandExecutionError(
@@ -179,7 +245,18 @@ async function ensureAutoTranslation(page, accepted) {
     }
     if (!state.checked) {
         const clicked = await page.evaluate(`(() => {
-          const checkbox = document.querySelector('input[type="checkbox"]');
+          const isConsentText = (value) => {
+            const text = String(value || '').toLowerCase();
+            return ['自动翻译', 'auto translation', 'automatic translation', 'terjemahan automatik', 'แปลอัตโนมัติ']
+              .some((term) => text.includes(term));
+          };
+          const checkbox = Array.from(document.querySelectorAll('input[type="checkbox"]')).find((candidate) => {
+            let node = candidate;
+            for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+              if (isConsentText(node.innerText)) return true;
+            }
+            return false;
+          });
           if (!checkbox) return false;
           checkbox.click();
           return Boolean(checkbox.checked);
@@ -208,59 +285,52 @@ async function ensureAutoTranslation(page, accepted) {
 async function selectCategory(page, payload) {
     const category = String(payload.category_path || '').trim();
     if (!category) throw new CommandExecutionError('UnoPIM did not provide a TikTok Shop category path');
-    const suggestionTrigger = await page.evaluate(`(() => {
-      const root = document.querySelector('#category_id');
-      const trigger = Array.from(root?.querySelectorAll('span') || []).find((node) =>
-        node.offsetParent !== null && /建议|suggestion/i.test(String(node.innerText || node.textContent || '')));
-      if (!trigger) return false;
-      const clickable = trigger.closest('.cursor-pointer') || trigger.parentElement || trigger;
-      clickable.click();
-      return true;
-    })()`);
-    if (suggestionTrigger) {
-        await page.wait({ time: 1 });
+    const rawPage = page.rawPage;
+    if (!rawPage) throw new CommandExecutionError('Playwright page is required for deterministic category selection');
+    const segments = category.split('>').map((value) => value.trim()).filter(Boolean);
+    const selectView = rawPage.locator('#product-cascader-select-view');
+    if (await selectView.count() !== 1) {
+        throw new CommandExecutionError('TikTok Shop category selector was not found');
     }
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-        const selection = await page.evaluate(`(() => {
-      const path = ${JSON.stringify(category)};
-      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-      const tokens = path.split('>').map(normalize).filter(Boolean);
-      const containsPath = (value) => {
-        const text = normalize(value);
-        return tokens.length > 0 && tokens.every((token) => text.includes(token));
-      };
-      const visible = (node) => node && node.offsetParent !== null && getComputedStyle(node).display !== 'none';
-      const categoryRoot = document.querySelector('#category_id');
-      if (!categoryRoot) return { selected: false, reason: 'category-control-not-found' };
-      const selectedView = document.querySelector('#product-cascader-select-view');
-      if (selectedView && containsPath(selectedView.innerText || selectedView.textContent || '')) {
-        return { selected: true, marked: false, path };
-      }
-      const candidates = Array.from(document.querySelectorAll('div')).filter(visible)
-        .filter((node) => containsPath(node.innerText || node.textContent || ''))
-        .sort((a, b) => String(a.innerText || '').length - String(b.innerText || '').length);
-      for (const candidate of candidates) {
-        const container = candidate.closest('div');
-        const searchRoots = [candidate, container, container?.parentElement, container?.parentElement?.parentElement].filter(Boolean);
-        for (const root of searchRoots) {
-          const button = Array.from(root.querySelectorAll('button')).find((node) =>
-            ['应用', 'apply'].includes(normalize(node.innerText || node.textContent || '')) && visible(node));
-          if (button) {
-            button.click();
-            return { selected: false, applied: true, path };
-          }
-        }
-      }
-      return { selected: false, marked: false, path };
-    })()`);
-        if (selection?.applied) {
-            await page.sleep(5);
-            return { selected: true, path: category };
-        }
-        if (selection?.selected) return { selected: true, path: category };
-        await page.wait({ time: 1 });
+    const selectedText = String(await selectView.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (segments.every((segment) => selectedText.includes(segment))) {
+        return { selected: true, path: category };
     }
-    throw new CommandExecutionError(`TikTok Shop category suggestion was not found: ${category}`);
+    await selectView.click();
+    for (const segment of segments) {
+        const option = rawPage.getByText(segment, { exact: true });
+        const matches = await option.count();
+        if (matches !== 1) {
+            throw new CommandExecutionError(
+                `TikTok Shop category segment must match exactly once; got ${matches}: ${segment}`,
+            );
+        }
+        const disabled = await option.evaluate((node) => Boolean(
+            node.matches('.disabled-node, [aria-disabled="true"]')
+            || node.closest('.disabled-node, [aria-disabled="true"]')
+            || node.querySelector('.disabled-node, [aria-disabled="true"]')
+        ));
+        if (disabled) {
+            throw new CommandExecutionError(
+                `TikTok Shop account main category does not allow: ${category}`,
+                'Use a shop whose main category includes this product; the command will not misclassify it into an unrelated category.',
+            );
+        }
+        await option.click();
+        await rawPage.waitForTimeout(500);
+    }
+    let confirmed = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        confirmed = String(await selectView.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+        if (segments.every((segment) => confirmed.includes(segment))) break;
+        await rawPage.waitForTimeout(500);
+    }
+    if (!segments.every((segment) => confirmed.includes(segment))) {
+        throw new CommandExecutionError(
+            `TikTok Shop did not confirm the selected category within 10 seconds: ${category}`,
+        );
+    }
+    return { selected: true, path: category };
 }
 
 function attributeLabel(value) {
@@ -294,19 +364,39 @@ async function configureVariants(page, payload) {
       return Boolean(root && String(root.innerText || '').includes(${JSON.stringify(propertyName)}));
     })()`);
     if (!hasProperty) {
-        await page.click('#sale_properties input[placeholder="请选择或输入销售属性"]');
-        await page.fillText('#sale_properties input[placeholder="请选择或输入销售属性"]', propertyName);
-        await page.wait({ time: 1 });
-        const option = await page.evaluate(`(() => {
-          const desired = ${JSON.stringify(propertyName)};
-          const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find((node) =>
-            node.offsetParent !== null && String(node.innerText || node.textContent || '').trim() === desired);
-          if (!item) return false;
-          item.click();
-          return true;
-        })()`);
-        if (!option) throw new CommandExecutionError(`TikTok Shop sales property was not found: ${propertyName}`);
-        await page.sleep(3);
+        const propertyInput = page.rawPage?.locator(
+            '#sale_properties input[placeholder="请选择或输入销售属性"]',
+        );
+        const propertyInputs = propertyInput ? await propertyInput.count() : 0;
+        if (propertyInputs !== 1) {
+            throw new CommandExecutionError(
+                `TikTok Shop sales-property input must match exactly once; got ${propertyInputs}`,
+            );
+        }
+        await propertyInput.click();
+        const propertyOption = page.rawPage
+            .locator('.core-cascader-popup:visible [role="menuitem"]')
+            .filter({ hasText: propertyName });
+        const propertyOptions = await propertyOption.count();
+        if (propertyOptions !== 1) {
+            throw new CommandExecutionError(
+                `TikTok Shop sales property must match exactly once; got ${propertyOptions}: ${propertyName}`,
+            );
+        }
+        await propertyOption.click();
+        let propertyConfirmed = false;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            propertyConfirmed = await page.evaluate(`(() => {
+              const root = document.querySelector('#sale_properties');
+              return Boolean(root && String(root.innerText || '').includes(${JSON.stringify(propertyName)}));
+            })()`);
+            if (propertyConfirmed) break;
+            await page.rawPage.waitForTimeout(500);
+        }
+        if (!propertyConfirmed) {
+            throw new CommandExecutionError(`TikTok Shop did not confirm the sales property: ${propertyName}`);
+        }
+        await page.sleep(2);
     }
 
     for (let index = 0; index < payload.variants.length; index += 1) {
@@ -317,38 +407,35 @@ async function configureVariants(page, payload) {
           return Boolean(root && String(root.innerText || '').split(/\\n/).some((line) => line.trim() === ${JSON.stringify(optionName)}));
         })()`);
         if (exists) continue;
-        if (index > 0) {
-            const added = await page.evaluate(`(() => {
-              const root = document.querySelector('#sale_properties');
-              const button = Array.from(root?.querySelectorAll('button') || []).find((node) =>
-                ['添加选项', 'add option'].includes(String(node.innerText || '').trim().toLowerCase()));
-              if (!button) return false;
-              button.click();
-              return true;
-            })()`);
-            if (!added) throw new CommandExecutionError('TikTok Shop Add option button was not found');
-            await page.sleep(1);
+        const optionInputs = page.rawPage?.locator('#sale_properties input.core-input-tag-input:visible');
+        const optionInputCount = optionInputs ? await optionInputs.count() : 0;
+        if (optionInputCount !== index + 1) {
+            throw new CommandExecutionError(
+                `TikTok Shop option row count must be ${index + 1}; got ${optionInputCount}: ${optionName}`,
+            );
         }
-        const emptyInput = await page.evaluate(`(() => {
-          document.querySelectorAll('[data-opencli-tk-option-input]').forEach((node) =>
-            node.removeAttribute('data-opencli-tk-option-input'));
-          const inputs = Array.from(document.querySelectorAll('#sale_properties input[placeholder="请输入中文"]'))
-            .filter((node) => node.offsetParent !== null && !node.value);
-          if (!inputs[0]) return false;
-          inputs[0].setAttribute('data-opencli-tk-option-input', '1');
-          return true;
-        })()`);
-        if (!emptyInput) throw new CommandExecutionError(`TikTok Shop option input was not found for ${optionName}`);
-        await page.fillText('input[data-opencli-tk-option-input="1"]', optionName);
-        await page.sleep(2);
-        await page.evaluate(`(() => {
-          const input = document.querySelector('input[data-opencli-tk-option-input="1"]');
-          if (!input) return false;
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
-          input.blur();
-          input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-          return true;
-        })()`);
+        const optionInput = optionInputs.nth(index);
+        await optionInput.fill(optionName);
+        if (index < payload.variants.length - 1) {
+            const addOption = page.rawPage.locator('#sale_properties button').filter({ hasText: '添加选项' });
+            const addOptionCount = await addOption.count();
+            if (addOptionCount !== 1) {
+                throw new CommandExecutionError(
+                    `TikTok Shop Add option button must match exactly once; got ${addOptionCount}`,
+                );
+            }
+            await addOption.click();
+        }
+        else {
+            const propertyLabel = page.rawPage.getByText('销售变体名称', { exact: true });
+            const propertyLabelCount = await propertyLabel.count();
+            if (propertyLabelCount !== 1) {
+                throw new CommandExecutionError(
+                    `TikTok Shop sales-property label must match exactly once; got ${propertyLabelCount}`,
+                );
+            }
+            await propertyLabel.click();
+        }
         await page.sleep(4);
         const committed = await page.evaluate(`(() => {
           const root = document.querySelector('#sale_properties');
@@ -676,11 +763,8 @@ cli({
     description: 'Fill a TikTok Shop product from local UnoPIM data and optionally save it as a draft; never publish',
     example: 'opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true --save false',
     domain: SELLER_DOMAIN,
-    strategy: Strategy.UI,
-    browser: true,
-    siteSession: 'persistent',
-    defaultWindowMode: 'foreground',
-    navigateBefore: false,
+    strategy: Strategy.LOCAL,
+    browser: false,
     args: [
         { name: 'sku', positional: true, required: true, help: 'UnoPIM product SKU' },
         { name: 'region', default: 'MY', help: 'TikTok Shop market code, e.g. MY or TH' },
@@ -688,9 +772,14 @@ cli({
         { name: 'save', type: 'boolean', default: false, help: 'Save as draft after filling; publish is always blocked' },
         { name: 'pim-url', help: 'Local product pipeline base URL (or PIM_API_URL)' },
         { name: 'pim-token', help: 'Local product pipeline callback token (or PIM_OPENCLI_TOKEN)' },
+        { name: 'browser-executable-path', help: 'Chrome executable used by Playwright (or TIKTOK_BROWSER_EXECUTABLE_PATH)' },
+        { name: 'user-data-dir', help: 'Dedicated persistent TikTok Chrome profile (or TIKTOK_BROWSER_USER_DATA_DIR)' },
+        { name: 'headless', type: 'boolean', default: false, help: 'Run Playwright without a visible browser window' },
+        { name: 'login-wait-seconds', type: 'int', default: 600, help: 'Pause for manual login/security verification in the visible Playwright window' },
+        { name: 'artifacts-dir', help: 'Directory for Playwright traces and failure screenshots' },
     ],
     columns: ['status', 'sku', 'region', 'product_name', 'url', 'fields_filled', 'images_uploaded', 'video_uploaded', 'variant_count', 'draft_saved', 'published', 'warnings'],
-    func: async (page, kwargs) => {
+    func: async (kwargs) => {
         const skuInput = String(kwargs.sku || '').trim();
         if (!skuInput) throw new ArgumentError('sku is required');
         const marketRegion = normalizeRegion(kwargs.region);
@@ -709,80 +798,78 @@ cli({
             seller_url: payload.seller_url,
         };
         try {
-            const cleanUrl = new URL(payload.seller_url);
-            cleanUrl.searchParams.set('opencli_run', String(Date.now()));
-            await page.goto(cleanUrl.toString(), { waitUntil: 'load', settleMs: 5000 });
-            const state = await page.evaluate(`(() => ({
-              currentHref: location.href,
-              pageTitle: document.title,
-              bodyExcerpt: String(document.body?.innerText || '').slice(0, 3000),
-              needsPassword: Boolean(document.querySelector('input[type="password"]')),
-            }))()`);
-            if (!state || typeof state !== 'object') {
-                throw new CommandExecutionError('TikTok Shop returned malformed page state');
-            }
-            if (state.needsPassword || /login|passport|accounts/i.test(String(state.currentHref || ''))) {
-                throw new AuthRequiredError(SELLER_DOMAIN, 'Log in to TikTok Shop Seller Center in the OpenCLI browser window first');
-            }
-            if (!String(state.currentHref || '').includes(SELLER_DOMAIN)) {
-                throw new CommandExecutionError(`TikTok Shop redirected to an unexpected page: ${state.currentHref || '(unknown)'}`);
-            }
+            return await withPlaywrightPage(kwargs, payload.attempt_id, async (page, artifacts) => {
+                const cleanUrl = new URL(payload.seller_url);
+                cleanUrl.searchParams.set('opencli_run', String(Date.now()));
+                await page.goto(cleanUrl.toString(), { waitUntil: 'load', settleMs: 5000 });
+                const state = await waitForSellerPage(page, kwargs['login-wait-seconds']);
+                if (!String(state.currentHref || '').includes(SELLER_DOMAIN)) {
+                    throw new CommandExecutionError(`TikTok Shop redirected to an unexpected page: ${state.currentHref || '(unknown)'}`);
+                }
 
-            const touched = await fillForm(page, payload);
-            const translation = await ensureAutoTranslation(page, acceptAutoTranslation);
-            if (translation.translated) touched.local_translation = true;
-            const category = await selectCategory(page, payload);
-            if (category.selected) touched.category = true;
-            const variantGrid = await configureVariants(page, payload);
-            if (variantGrid.complete && payload.variants.length > 1) touched.variants = true;
-            const shipping = await fillShipping(page, payload);
-            if (Array.isArray(shipping) && shipping.length === 4) touched.shipping = true;
-            const media = await uploadMedia(page, payload);
-            const warnings = [...media.warnings];
-            if (variantGrid.warning) warnings.push(variantGrid.warning);
-            const essential = ['product_name', 'description'];
-            const missing = essential.filter((name) => !touched[name]);
-            if (missing.length > 0) {
-                throw new CommandExecutionError(`Required TikTok Shop fields were not found: ${missing.join(', ')}`);
-            }
+                await selectProductLanguage(page, payload);
+                const touched = await fillForm(page, payload);
+                touched.product_language = true;
+                const category = await selectCategory(page, payload);
+                if (category.selected) touched.category = true;
+                const translation = await ensureAutoTranslation(page, acceptAutoTranslation);
+                if (translation.translated) touched.local_translation = true;
+                const variantGrid = await configureVariants(page, payload);
+                if (variantGrid.complete && payload.variants.length > 1) touched.variants = true;
+                const shipping = await fillShipping(page, payload);
+                if (Array.isArray(shipping) && shipping.length === 4) touched.shipping = true;
+                const media = await uploadMedia(page, payload);
+                const warnings = [...media.warnings];
+                if (variantGrid.warning) warnings.push(variantGrid.warning);
+                const essential = ['product_name', 'description'];
+                const missing = essential.filter((name) => !touched[name]);
+                if (missing.length > 0) {
+                    throw new CommandExecutionError(`Required TikTok Shop fields were not found: ${missing.join(', ')}`);
+                }
 
-            let statusValue = 'form_filled';
-            let draftSaved = false;
-            let currentUrl = state.currentHref;
-            if (shouldSave) {
-                const saved = await saveDraft(page);
-                draftSaved = Boolean(saved?.wasSaved);
-                currentUrl = saved?.currentHref || currentUrl;
-                statusValue = draftSaved ? 'draft_saved' : 'draft_save_unconfirmed';
-                if (!draftSaved) {
-                    warnings.push('Save draft was clicked but no authoritative saved confirmation was detected');
-                    if (Array.isArray(saved?.validationErrors) && saved.validationErrors.length > 0) {
-                        warnings.push(`TikTok validation: ${saved.validationErrors.join(' / ')}`);
+                let statusValue = 'form_filled';
+                let draftSaved = false;
+                let currentUrl = state.currentHref;
+                if (shouldSave) {
+                    const saved = await saveDraft(page);
+                    draftSaved = Boolean(saved?.wasSaved);
+                    currentUrl = saved?.currentHref || currentUrl;
+                    statusValue = draftSaved ? 'draft_saved' : 'draft_save_unconfirmed';
+                    if (!draftSaved) {
+                        warnings.push('Save draft was clicked but no authoritative saved confirmation was detected');
+                        if (Array.isArray(saved?.validationErrors) && saved.validationErrors.length > 0) {
+                            warnings.push(`TikTok validation: ${saved.validationErrors.join(' / ')}`);
+                        }
                     }
                 }
-            }
-            const fields = Object.keys(touched).filter((key) => touched[key]);
-            await callbackResult(pimUrl, pimToken, {
-                ...callbackBase,
-                status: statusValue,
-                draft_url: draftSaved ? currentUrl : null,
-                filled_fields: fields,
-                response_payload: { images_uploaded: media.images, video_uploaded: media.video, warnings },
+                const fields = Object.keys(touched).filter((key) => touched[key]);
+                await callbackResult(pimUrl, pimToken, {
+                    ...callbackBase,
+                    status: statusValue,
+                    draft_url: draftSaved ? currentUrl : null,
+                    filled_fields: fields,
+                    response_payload: {
+                        images_uploaded: media.images,
+                        video_uploaded: media.video,
+                        warnings,
+                        playwright_trace: artifacts.tracePath,
+                    },
+                });
+                return [{
+                    status: statusValue,
+                    sku: skuInput,
+                    region: marketRegion,
+                    product_name: payload.title,
+                    url: currentUrl,
+                    fields_filled: fields.join(', '),
+                    images_uploaded: media.images,
+                    video_uploaded: media.video,
+                    variant_count: payload.variants.length,
+                    draft_saved: draftSaved,
+                    published: false,
+                    warnings: warnings.join(' | '),
+                }];
             });
-            return [{
-                status: statusValue,
-                sku: skuInput,
-                region: marketRegion,
-                product_name: payload.title,
-                url: currentUrl,
-                fields_filled: fields.join(', '),
-                images_uploaded: media.images,
-                video_uploaded: media.video,
-                variant_count: payload.variants.length,
-                draft_saved: draftSaved,
-                published: false,
-                warnings: warnings.join(' | '),
-            }];
         }
         catch (error) {
             await callbackResult(pimUrl, pimToken, {
@@ -796,4 +883,4 @@ cli({
     },
 });
 
-export { boolValue, evaluateScript, normalizeRegion, variantFillScript };
+export { boolValue, evaluateScript, normalizeRegion, sellerLanguageLabel, variantFillScript };
