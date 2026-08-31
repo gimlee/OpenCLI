@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 
 import { CommandExecutionError } from '@jackwener/opencli/errors';
@@ -117,6 +119,60 @@ function createPageAdapter(page) {
     };
 }
 
+async function freeLocalPort() {
+    return await new Promise((resolvePort, reject) => {
+        const server = createServer();
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const address = server.address();
+            const port = typeof address === 'object' && address ? address.port : 0;
+            server.close((error) => error ? reject(error) : resolvePort(port));
+        });
+    });
+}
+
+async function launchNormalChrome(options) {
+    const port = await freeLocalPort();
+    const args = [
+        `--remote-debugging-port=${port}`,
+        '--remote-allow-origins=*',
+        `--user-data-dir=${options.userDataDir}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--lang=zh-CN',
+        '--start-maximized',
+    ];
+    if (options.headless) args.push('--headless=new');
+    args.push('about:blank');
+    const chromeProcess = spawn(options.executablePath, args, {
+        stdio: 'ignore',
+        windowsHide: false,
+    });
+    let exitCode = null;
+    chromeProcess.once('exit', (code) => { exitCode = code; });
+    const endpoint = `http://127.0.0.1:${port}`;
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+        if (exitCode !== null) {
+            throw new CommandExecutionError(
+                `TikTok Chrome exited during startup (code ${exitCode})`,
+                `Close the Chrome window using this dedicated profile, then rerun: ${options.userDataDir}`,
+            );
+        }
+        try {
+            const response = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(1000) });
+            if (response.ok) return { chromeProcess, endpoint };
+        }
+        catch {}
+        await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    }
+    chromeProcess.kill();
+    throw new CommandExecutionError(
+        'TikTok Chrome did not expose its local debugging connection within 30 seconds',
+        `Close the Chrome window using this dedicated profile, then rerun: ${options.userDataDir}`,
+    );
+}
+
 async function withPlaywrightPage(kwargs, attemptId, task) {
     const options = runtimeOptions(kwargs);
     if (!existsSync(options.executablePath)) {
@@ -128,21 +184,16 @@ async function withPlaywrightPage(kwargs, attemptId, task) {
     const failureScreenshot = resolve(options.artifactsDir, `${attemptId}-failure.png`);
     let context;
     let page;
+    let browser;
+    let chromeProcess;
     try {
-        context = await chromium.launchPersistentContext(options.userDataDir, {
-            executablePath: options.executablePath,
-            headless: options.headless,
-            viewport: null,
-            acceptDownloads: true,
-            locale: 'zh-CN',
-            args: [
-                '--start-maximized',
-                '--no-first-run',
-                '--disable-session-crashed-bubble',
-            ],
-        });
+        const launched = await launchNormalChrome(options);
+        chromeProcess = launched.chromeProcess;
+        browser = await chromium.connectOverCDP(launched.endpoint);
+        context = browser.contexts()[0];
+        if (!context) throw new CommandExecutionError('TikTok Chrome did not expose a browser context');
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-        page = await context.newPage();
+        page = context.pages().find((candidate) => candidate.url() === 'about:blank') || await context.newPage();
         page.setDefaultTimeout(20_000);
         page.setDefaultNavigationTimeout(60_000);
         return await task(createPageAdapter(page), { tracePath, failureScreenshot, userDataDir: options.userDataDir });
@@ -163,9 +214,10 @@ async function withPlaywrightPage(kwargs, attemptId, task) {
     finally {
         if (context) {
             await context.tracing.stop({ path: tracePath }).catch(() => {});
-            await context.close().catch(() => {});
         }
+        if (browser) await browser.close().catch(() => {});
+        if (chromeProcess && chromeProcess.exitCode === null) chromeProcess.kill();
     }
 }
 
-export { booleanValue, createPageAdapter, runtimeOptions, withPlaywrightPage };
+export { booleanValue, createPageAdapter, freeLocalPort, runtimeOptions, withPlaywrightPage };

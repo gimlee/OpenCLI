@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { boolValue, evaluateScript, normalizeRegion, sellerLanguageLabel, variantFillScript } from './draft.js';
-import { booleanValue, runtimeOptions } from './playwright-runtime.js';
+import { boolValue, draftStatusScript, evaluateScript, normalizeRegion, sellerLanguageLabel, variantFillScript } from './draft.js';
+import { booleanValue, freeLocalPort, runtimeOptions } from './playwright-runtime.js';
 
 describe('tk-seller draft helpers', () => {
     it('normalizes region codes and rejects malformed values', () => {
@@ -46,6 +46,11 @@ describe('tk-seller draft helpers', () => {
         expect(script).not.toContain('publish');
     });
 
+    it('builds syntactically valid save-draft status probes', () => {
+        expect(() => new Function(`return ${draftStatusScript()}`)).not.toThrow();
+        expect(() => new Function(`return ${draftStatusScript(true)}`)).not.toThrow();
+    });
+
     it('uses a dedicated persistent Playwright profile without OpenCLI browser state', () => {
         expect(booleanValue('true')).toBe(true);
         expect(booleanValue(undefined, false)).toBe(false);
@@ -57,5 +62,11 @@ describe('tk-seller draft helpers', () => {
         expect(options.executablePath).toBe('C:/Chrome/chrome.exe');
         expect(options.userDataDir).toMatch(/tk-seller-test-profile$/);
         expect(options.headless).toBe(true);
+    });
+
+    it('allocates a local CDP port for a normal Chrome launch', async () => {
+        const port = await freeLocalPort();
+        expect(port).toBeGreaterThan(0);
+        expect(port).toBeLessThan(65536);
     });
 });
