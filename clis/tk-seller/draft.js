@@ -467,9 +467,22 @@ async function configureVariants(page, payload, popupManager) {
             await popupManager.run(() => addOption.click(), `add variant option ${index + 2}`);
         }
         else {
-            const propertyLabel = page.rawPage.getByText('销售变体名称', { exact: true });
-            const propertyLabelCount = await propertyLabel.count();
-            if (propertyLabelCount !== 1) {
+            // The seller center renamed this form label from 销售变体名称 to 变体名称
+            // (September 2026); match either wording, scoped to #sale_properties so the
+            // SKU table's identically named column header is never a candidate.
+            let propertyLabel = null;
+            let propertyLabelCount = 0;
+            for (const label of ['销售变体名称', '变体名称', 'Sales variant name', 'Nama varian']) {
+                const candidate = page.rawPage.locator('#sale_properties').getByText(label, { exact: true });
+                const count = await candidate.count();
+                if (count === 1) {
+                    propertyLabel = candidate;
+                    propertyLabelCount = 1;
+                    break;
+                }
+                propertyLabelCount = Math.max(propertyLabelCount, count);
+            }
+            if (!propertyLabel || propertyLabelCount !== 1) {
                 throw new CommandExecutionError(
                     `TikTok Shop sales-property label must match exactly once; got ${propertyLabelCount}`,
                 );
