@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { basename, extname } from 'node:path';
 
 import { withPlaywrightPage } from './playwright-runtime.js';
+import { ensureLocalPipeline } from './pipeline-runtime.js';
 import { PopupManager } from './popup-manager.js';
 
 const DEFAULT_PIM_URL = 'http://127.0.0.1:8020';
@@ -70,7 +71,7 @@ async function waitForSellerPage(page, loginWaitSeconds) {
     }
 }
 
-async function pimRequest(baseUrl, token, path, payload) {
+async function pimRequest(baseUrl, token, path, payload, timeoutMs = 180_000) {
     let response;
     try {
         response = await fetch(`${baseUrl}${path}`, {
@@ -81,13 +82,19 @@ async function pimRequest(baseUrl, token, path, payload) {
                 'X-PIM-Token': token,
             },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 180_000)),
         });
     }
     catch (error) {
+        const timedOut = /abort|timeout/i.test(String(error?.name || error))
+            || /abort|timeout/i.test(String(error?.message || ''));
         throw new CommandExecutionError(
-            `Cannot reach the local product pipeline at ${baseUrl}`,
-            `Start it with: uvicorn app.main:app --host 127.0.0.1 --port 8020. ${String(error)}`,
+            timedOut
+                ? `Local product pipeline timed out while preparing listing data after ${Math.round(timeoutMs / 1000)} seconds`
+                : `Cannot reach the local product pipeline at ${baseUrl}`,
+            timedOut
+                ? 'UnoPIM media preparation is still taking too long; increase --pipeline-request-timeout-seconds.'
+                : `Automatic startup was attempted. Verify --pim-url and --pim-project-dir. ${String(error)}`,
         );
     }
     const body = await response.json().catch(() => ({}));
@@ -869,6 +876,9 @@ cli({
         { name: 'save', type: 'boolean', default: false, help: 'Save as draft after filling; publish is always blocked' },
         { name: 'pim-url', help: 'Local product pipeline base URL (or PIM_API_URL)' },
         { name: 'pim-token', help: 'Local product pipeline callback token (or PIM_OPENCLI_TOKEN)' },
+        { name: 'pim-project-dir', help: 'product-info-management directory used for automatic pipeline startup (or PIM_PROJECT_DIR)' },
+        { name: 'auto-start-pipeline', type: 'boolean', default: true, help: 'Automatically start and stop the local product pipeline when needed' },
+        { name: 'pipeline-request-timeout-seconds', type: 'int', default: 180, help: 'Maximum time to prepare UnoPIM listing data' },
         { name: 'browser-executable-path', help: 'Chrome executable used by Playwright (or TIKTOK_BROWSER_EXECUTABLE_PATH)' },
         { name: 'user-data-dir', help: 'Dedicated persistent TikTok Chrome profile (or TIKTOK_BROWSER_USER_DATA_DIR)' },
         { name: 'headless', type: 'boolean', default: false, help: 'Run Playwright without a visible browser window' },
@@ -885,19 +895,29 @@ cli({
         const verificationWaitSeconds = Math.max(0, Number(kwargs['login-wait-seconds']) || 0);
         const pimUrl = String(kwargs['pim-url'] || process.env.PIM_API_URL || DEFAULT_PIM_URL).replace(/\/$/, '');
         const pimToken = String(kwargs['pim-token'] || process.env.PIM_OPENCLI_TOKEN || DEFAULT_PIM_TOKEN);
-        const payload = await pimRequest(pimUrl, pimToken, '/api/opencli/listings/start', {
+        const pipelineRequestTimeoutMs = Math.max(
+            15,
+            Number(kwargs['pipeline-request-timeout-seconds'] || process.env.PIM_REQUEST_TIMEOUT_SECONDS || 180),
+        ) * 1000;
+        const pipelineRuntime = await ensureLocalPipeline({
+            baseUrl: pimUrl,
+            autoStart: boolValue(kwargs['auto-start-pipeline'] ?? process.env.PIM_AUTO_START ?? true),
+            projectDir: kwargs['pim-project-dir'] || process.env.PIM_PROJECT_DIR,
+        });
+        try {
+            const payload = await pimRequest(pimUrl, pimToken, '/api/opencli/listings/start', {
             sku: skuInput,
             region: marketRegion,
             save: shouldSave,
-        });
-        const callbackBase = {
+            }, pipelineRequestTimeoutMs);
+            const callbackBase = {
             attempt_id: payload.attempt_id,
             published: false,
             seller_url: payload.seller_url,
-        };
-        let popupEvents = [];
-        try {
-            return await withPlaywrightPage(kwargs, payload.attempt_id, async (page, artifacts) => {
+            };
+            let popupEvents = [];
+            try {
+                return await withPlaywrightPage(kwargs, payload.attempt_id, async (page, artifacts) => {
                 const popupManager = new PopupManager(page, {
                     waitSeconds: verificationWaitSeconds,
                     interactive: !boolValue(kwargs.headless),
@@ -982,19 +1002,23 @@ cli({
                     published: false,
                     warnings: warnings.join(' | '),
                 }];
-            });
-        }
-        catch (error) {
-            await callbackResult(pimUrl, pimToken, {
+                });
+            }
+            catch (error) {
+                await callbackResult(pimUrl, pimToken, {
                 ...callbackBase,
                 status: 'failed',
                 filled_fields: [],
                 error: error instanceof Error ? error.message : String(error),
                 response_payload: { popup_events: popupEvents },
-            });
-            throw error;
+                });
+                throw error;
+            }
+        }
+        finally {
+            await pipelineRuntime.stop();
         }
     },
 });
 
-export { boolValue, draftStatusScript, evaluateScript, normalizeRegion, sellerLanguageLabel, variantFillScript };
+export { boolValue, draftStatusScript, evaluateScript, normalizeRegion, pimRequest, sellerLanguageLabel, variantFillScript };

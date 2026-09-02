@@ -37369,6 +37369,76 @@
   },
   {
     "site": "tk-seller",
+    "name": "categories",
+    "description": "Capture the complete TikTok Shop regional category taxonomy from the authenticated product page",
+    "access": "write",
+    "example": "opencli tk-seller categories --region MY --output E:\\github\\product-info-management\\config\\tiktok-my-category-tree.json",
+    "domain": "seller.tiktokshopglobalselling.com",
+    "strategy": "local",
+    "browser": false,
+    "args": [
+      {
+        "name": "region",
+        "type": "str",
+        "default": "MY",
+        "required": false,
+        "help": "TikTok Shop market code, e.g. MY or TH"
+      },
+      {
+        "name": "output",
+        "type": "str",
+        "required": true,
+        "help": "Destination JSON file for the complete category taxonomy"
+      },
+      {
+        "name": "browser-executable-path",
+        "type": "str",
+        "required": false,
+        "help": "Chrome executable used by Playwright (or TIKTOK_BROWSER_EXECUTABLE_PATH)"
+      },
+      {
+        "name": "user-data-dir",
+        "type": "str",
+        "required": false,
+        "help": "Dedicated persistent TikTok Chrome profile (or TIKTOK_BROWSER_USER_DATA_DIR)"
+      },
+      {
+        "name": "headless",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Run Playwright without a visible browser window"
+      },
+      {
+        "name": "login-wait-seconds",
+        "type": "int",
+        "default": 600,
+        "required": false,
+        "help": "Pause for manual login/security verification in the visible Playwright window"
+      },
+      {
+        "name": "artifacts-dir",
+        "type": "str",
+        "required": false,
+        "help": "Directory for Playwright traces and failure screenshots"
+      }
+    ],
+    "columns": [
+      "status",
+      "region",
+      "version",
+      "categories",
+      "roots",
+      "leaves",
+      "enabled",
+      "output"
+    ],
+    "type": "js",
+    "modulePath": "tk-seller/categories.js",
+    "sourceFile": "tk-seller/categories.js"
+  },
+  {
+    "site": "tk-seller",
     "name": "draft",
     "description": "Fill a TikTok Shop product from local UnoPIM data and optionally save it as a draft; never publish",
     "access": "write",
@@ -37416,6 +37486,26 @@
         "type": "str",
         "required": false,
         "help": "Local product pipeline callback token (or PIM_OPENCLI_TOKEN)"
+      },
+      {
+        "name": "pim-project-dir",
+        "type": "str",
+        "required": false,
+        "help": "product-info-management directory used for automatic pipeline startup (or PIM_PROJECT_DIR)"
+      },
+      {
+        "name": "auto-start-pipeline",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Automatically start and stop the local product pipeline when needed"
+      },
+      {
+        "name": "pipeline-request-timeout-seconds",
+        "type": "int",
+        "default": 180,
+        "required": false,
+        "help": "Maximum time to prepare UnoPIM listing data"
       },
       {
         "name": "browser-executable-path",

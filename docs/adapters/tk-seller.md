@@ -2,6 +2,18 @@
 
 `tk-seller` 从本机商品管道读取已经同步 UnoPIM 的商品，并填写 TikTok Shop Seller Center 商品创建页。
 
+## 同步平台类目
+
+使用已登录的 TikTok Shop 专用 Chrome 配置，从商品发布页抓取指定地区的完整类目树：
+
+```powershell
+opencli tk-seller categories --region MY --output E:\github\product-info-management\config\tiktok-my-category-tree.json
+```
+
+首次登录或出现安全验证时，命令会保持浏览器窗口并等待人工完成验证。输出文件可交给商品信息管理系统的 `python -m app.cli sync-unopim-schema` 命令同步到 UnoPIM。
+
+## 填写并保存草稿
+
 ```bash
 opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true --save false --login-wait-seconds 600
 opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true --save true
@@ -13,6 +25,9 @@ opencli tk-seller draft 999376601750 --region MY --accept-auto-translation true 
 - `--save true`：点击“保存草稿”，仍不会发布。
 - `--pim-url`：本机商品管道地址，默认 `http://127.0.0.1:8020`。
 - `--pim-token`：本机回写令牌；也可设置 `PIM_OPENCLI_TOKEN`。
+- `--auto-start-pipeline`：默认 `true`；8020 未运行时自动启动商品管道，命令结束后自动关闭本次启动的进程。
+- `--pim-project-dir`：商品管道源码目录；默认自动发现 OpenCLI 相邻的 `product-info-management`，也可设置 `PIM_PROJECT_DIR`。
+- `--pipeline-request-timeout-seconds`：UnoPIM 商品和媒体准备超时，默认 180 秒；也可设置 `PIM_REQUEST_TIMEOUT_SECONDS`。
 - `--login-wait-seconds`：登录或安全验证时暂停等待人工处理，默认 600 秒；登录状态会持久化。
 - `--browser-executable-path`：普通 Chrome 可执行文件，默认系统 Chrome。
 - `--user-data-dir`：TikTok 专用持久化配置，默认 `D:\tk-seller-playwright-profile`。

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { boolValue, draftStatusScript, evaluateScript, normalizeRegion, sellerLanguageLabel, variantFillScript } from './draft.js';
+import { boolValue, draftStatusScript, evaluateScript, normalizeRegion, pimRequest, sellerLanguageLabel, variantFillScript } from './draft.js';
 import { booleanValue, freeLocalPort, runtimeOptions } from './playwright-runtime.js';
 
 describe('tk-seller draft helpers', () => {
@@ -68,5 +68,32 @@ describe('tk-seller draft helpers', () => {
         const port = await freeLocalPort();
         expect(port).toBeGreaterThan(0);
         expect(port).toBeLessThan(65536);
+    });
+
+    it('allows slow UnoPIM listing preparation beyond the old 15 second limit', async () => {
+        const originalFetch = globalThis.fetch;
+        let timeoutSignal;
+        globalThis.fetch = async (_url, options) => {
+            timeoutSignal = options.signal;
+            return new Response(JSON.stringify({ success: true, data: { attempt_id: 'attempt-1' } }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        };
+
+        try {
+            await expect(pimRequest(
+                'http://127.0.0.1:8020',
+                'token',
+                '/api/opencli/listings/start',
+                { sku: 'SKU-1' },
+                180_000,
+            )).resolves.toEqual({ attempt_id: 'attempt-1' });
+            expect(timeoutSignal).toBeInstanceOf(AbortSignal);
+            expect(timeoutSignal.aborted).toBe(false);
+        }
+        finally {
+            globalThis.fetch = originalFetch;
+        }
     });
 });
